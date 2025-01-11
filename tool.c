@@ -375,6 +375,33 @@ int btcp_get_port(const char*bigbuffer, unsigned short * dest, unsigned short *s
     return 0;
 }
 
+int btcp_nonblock_send(int fd, const char *buf, int size)
+{
+    int offset = 0;
+    while (size > 0)
+    {
+        int iret = write(fd, buf + offset, size);
+        if (iret < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                usleep(1);
+            }
+            else
+            {
+                g_critical("write to nonblock fd failed!%s", strerror(errno));
+                return -1;
+            }
+        }
+        else
+        {
+            offset += iret;
+            size -= iret;
+        }
+    }
+    return 0;
+}
+
 int btcp_print_tcphdr(const char*bigbuffer, const char * msg)
 {
     union btcp_tcphdr_with_option *tcphdr = (union btcp_tcphdr_with_option *)bigbuffer;

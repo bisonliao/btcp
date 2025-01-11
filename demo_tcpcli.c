@@ -25,6 +25,8 @@ int main(int argc, char** argv)
     
     uint64_t total_write = 0; // 统计用户层发送了多少字节
     uint64_t total_read = 0;
+    char buf[102400] = {0};
+    ssize_t sz = 102400;
     while (1)
     {
         if (handler.status != ESTABLISHED)
@@ -33,16 +35,17 @@ int main(int argc, char** argv)
             continue;
         }
 
-         if (total_write < 1997)
+        if (total_write < 100000000)
         {
             // 准备 26个英文小写字母
-            char buf[1024];
-            ssize_t sz = 26;
-
+            
+            
+            #if 0
             for (int i = 0; i < sz; ++i)
             {
                 buf[i] = 'a' + i;
             }
+            #endif
             int offset = 0;
 
             // 不断的通过tcp连接发送给服务器
@@ -53,7 +56,6 @@ int main(int argc, char** argv)
                 {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
                     {
-                        usleep(100);
                         continue;
                     }
                     else
@@ -74,6 +76,11 @@ int main(int argc, char** argv)
                 }
             }
         }
+        else
+        {
+            break;
+        }
+        #if 0
         while (1) // 不断的收数据
         {
             char buf[1024];
@@ -102,16 +109,17 @@ int main(int argc, char** argv)
                 
             }
         }
+        #endif
        
-        usleep(1000000*1);
+        //usleep(1000000*1);
         
     }
     g_info("client close the conn");
     close(handler.user_socket_pair[0]);
     while (1)
     {
-        usleep(2000000);
-        g_info("status=%d", handler.status);
+        usleep(1000);
+        g_warning("status=%d", handler.status);
     }
    
     return 0;

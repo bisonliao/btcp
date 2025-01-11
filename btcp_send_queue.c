@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "tool.h"
+#include <errno.h>
 
 
 
@@ -92,6 +93,89 @@ size_t btcp_send_queue_enqueue(struct btcp_send_queue *queue, const unsigned cha
 
     queue->size += bytes_to_enqueue;
     return bytes_to_enqueue;
+}
+
+int btcp_send_queue_enqueue_zero_copy(struct btcp_send_queue *queue, int fd, bool* fd_closed)
+{
+    *fd_closed = 0;
+    int available = btcp_send_queue_get_available_space(queue);
+    if (available <= 0)
+    {
+        return 0;
+    }
+    
+  
+    int size = queue->capacity - queue->tail; // 从tail往后到buffer结束的字节数
+    int size1, size2;
+    if (size >= available) // queue里只有一段空闲空间，从tail往后一段连续的空间
+    {
+        size1 = available;
+        size2 = 0; 
+    }
+    else // queue里有两段空闲空间：从tail往后一直到buffer结束， 从下标0往后还有一段
+    {
+        size1 = size;
+        size2 = available - size;
+    }
+    {
+        //读到第一段里面
+        g_info("try read, len=%d", size1);
+        int read1 = read(fd, queue->buffer+queue->tail, size1);
+        g_info("read return rea1=%d at %d", read1, __LINE__);
+        if (read1 < 0)
+        {
+            g_critical("read() failed in %s! %s", __FUNCTION__, strerror(errno));
+            return -1;
+        }
+        else if (read1 == 0) // socket关闭了
+        {
+            g_info("return read1==0, %d", __LINE__);
+            *fd_closed = 1;
+            return 0;
+        }
+        else  // read1 > 0
+        { 
+            queue->size += read1;
+            queue->tail = (queue->tail + read1)%queue->capacity;
+            g_assert(queue->fin_seq < 0); 
+            if (read1 < size1) //读一次就读尽了数据
+            {
+                g_info("return read1==0, %d", __LINE__);
+                return 0;
+            }
+            else if (size2 > 0)   
+            {
+                // 读到第二段里面
+                g_info("try read, len=%d", size2);
+                int read2 = read(fd, queue->buffer, size2);
+                g_info("read return %d at %d", read2, __LINE__);
+                if (read2 < 0)
+                {
+                    g_critical("read() failed in %s! %s", __FUNCTION__, strerror(errno));
+                    return 0;
+                }
+                else if (read2 == 0) // socket关闭了
+                {
+                    
+                    *fd_closed = 1;
+                    return 0;
+                }
+                else // read2 > 0
+                {
+                    g_assert(queue->fin_seq < 0); 
+                    queue->size += read2;
+                    queue->tail = (queue->tail + read2) % queue->capacity;
+                    return 0;
+                }
+            }
+            return 0;
+        }
+    }
+    // 我在这里载过跟头，2个小时程序跑起来莫名其妙关闭，只因为少了下面这句，函数默认返回0.
+    // 而这个返回值一开始用来判断socket fd是否对端关闭了。考
+    // 后来干脆加一个fd_closed参数更明确
+    return 0;
+
 }
 
 // 出队操作（字节流）

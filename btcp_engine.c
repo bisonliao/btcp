@@ -306,7 +306,7 @@ int btcp_handle_sync_rcvd2(char * bigbuffer,  struct btcp_tcpconn_handler * hand
         g_critical("in %s(), socketpair()failed, %s", __FUNCTION__, strerror(errno));
         return -1;
     }
-    g_debug("create socketpair:%d,%d", handler->user_socket_pair[0], handler->user_socket_pair[1]);
+    g_warning("create socketpair:%d,%d", handler->user_socket_pair[0], handler->user_socket_pair[1]);
     
     btcp_set_socket_nonblock(handler->user_socket_pair[0]);
     btcp_set_socket_nonblock(handler->user_socket_pair[1]);
@@ -353,7 +353,7 @@ int btcp_shrink_cong_wnd(struct btcp_tcpconn_handler *handler, bool quick)
     handler->cong_wnd_threshold = handler->cong_wnd / 2;
     if (handler->cong_wnd_threshold < 4)
     {
-        handler->cong_wnd_threshold = 8;
+        handler->cong_wnd_threshold = 16;
     }
 
     if (!quick)
@@ -564,34 +564,7 @@ int btcp_keep_alive(struct btcp_tcpconn_handler *handler, char *bigbuffer, bool 
 
 int btcp_throw_data_to_user(struct btcp_tcpconn_handler * handler)
 {
-    int size = btcp_recv_queue_size(&handler->recv_buf);
-    if (size <= 0)
-    {
-        g_warning("unexpected data size! %d, %s %d", size, __FILE__, __LINE__);
-        return 0;
-    }
-    unsigned char buf[1024];
-    while (size > 0)
-    {
-        int len = sizeof(buf);
-        if (len > size)
-        {
-            len = size;
-        }
-        btcp_recv_queue_dequeue(&handler->recv_buf, buf, len);
-        size -= len;
-        int written = send(handler->user_socket_pair[1], buf, len, MSG_NOSIGNAL);
-        if (written!= len)
-        {
-            g_warning("write user socket pair failed!%d!=%d, (%s, %d)", written, len, __FILE__, __LINE__);
-        }
-        else
-        {
-            g_info("thow %d bytes data to users", written);
-        }
-        
-    }
-    return 0;
+    return btcp_recv_queue_throw_data_to_user(&handler->recv_buf, handler->user_socket_pair[1]);
 }
 
 
@@ -964,10 +937,10 @@ int btcp_tcpcli_connect(const char * ip, short int port, struct btcp_tcpconn_han
         return -1;
     }
     //todo:测试用，要注释掉
-    handler->mss = 5;
+    //handler->mss = 5;
    
     handler->cong_wnd = 1;
-    handler->cong_wnd_threshold = 8;
+    handler->cong_wnd_threshold = 16;
   
     
     if (btcp_tcpcli_init_udp(handler)) { return -1;}
@@ -1239,7 +1212,7 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
     }
      
     int datasz_in_queue = btcp_send_queue_size(&handler->send_buf);
-    static unsigned char bigbuffer[100 * 1024] __attribute__((aligned(8))); // 临时用一下，不会跨线程，也不会超出函数的作用域
+    static unsigned char bigbuffer[DEF_RECV_BUFSZ] __attribute__((aligned(8))); // 临时用一下，不会跨线程，也不会超出函数的作用域
     struct btcp_range *range_to_send = NULL;
     GList *range_list_to_send = NULL;
     GList *range_list_sent = NULL;
@@ -1358,6 +1331,17 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
         server_addr.sin_family = AF_INET;
         server_addr.sin_addr.s_addr = inet_addr(handler->peer_ip);
         server_addr.sin_port = htons(handler->peer_port);
+        //初始化好首部字段
+        struct btcp_tcphdr *hdr = (struct btcp_tcphdr *)bigbuffer;
+        memset(hdr, 0, sizeof(struct btcp_tcphdr));
+        hdr->dest = htons(handler->peer_port);
+        hdr->source = htons(handler->local_port);
+        int recv_wndsz = btcp_recv_queue_get_available_space(&handler->recv_buf);
+        hdr->window = htons(recv_wndsz);
+        
+        int offset = sizeof(struct btcp_tcphdr);
+        btcp_set_tcphdr_offset(offset, &hdr->doff_res_flags);
+
         for (const GList *iter = combined_list; iter != NULL; iter = iter->next)
         {
             struct btcp_range *a_range = (struct btcp_range *)iter->data;
@@ -1372,29 +1356,25 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
                 {
                     datalen = handler->mss;
                 }
-                if (btcp_send_queue_fetch_data(&handler->send_buf, b_range.from, b_range.from + datalen - 1, bigbuffer + sizeof(struct btcp_tcphdr)))
+                //想要性能极致的话，这里可以避免一次数据拷贝，直接在send quene里做sendto
+                if (btcp_send_queue_fetch_data(&handler->send_buf, 
+                                    b_range.from, 
+                                    b_range.from + datalen - 1, 
+                                    bigbuffer + sizeof(struct btcp_tcphdr)))
                 {
                     g_warning("!!!btcp_send_queue_fetch_data() failed\n");
                     break;
                 }
                 g_info("send a tcp package[%llu, %llu]", b_range.from, b_range.from + datalen - 1);
 
-                struct btcp_tcphdr *hdr = (struct btcp_tcphdr *)bigbuffer;
-                memset(hdr, 0, sizeof(struct btcp_tcphdr));
-                hdr->dest = htons(handler->peer_port);
-                hdr->source = htons(handler->local_port);
-                int recv_wndsz = btcp_recv_queue_get_available_space(&handler->recv_buf);
-                hdr->window = htons(recv_wndsz);
                 hdr->seq = htonl(btcp_sequence_round_in(b_range.from));
-                int offset = sizeof(struct btcp_tcphdr);
-                btcp_set_tcphdr_offset(offset, &hdr->doff_res_flags);
-                offset += datalen;
+                offset = sizeof(struct btcp_tcphdr) + datalen;
 
                 // 模拟丢包率 . todo:要改回去
                 unsigned int r = btcp_get_random() % 20;
                 int sent_len;
-                if (r != 0)
-                //if (1)
+                //if (r != 0)
+                if (1)
                 {
                     sent_len = sendto(handler->udp_socket, hdr, offset, 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
                     if (sent_len < 0) // udp发包，不存在只发部分报文的情况，要么完整报文，要么负1
@@ -1548,7 +1528,7 @@ static void* btcp_tcpcli_loop(void *arg)
     printf("btcp_tcpcli_loop() start...,  %d, %u\n", sizeof(void*), handler);
     int timeout = 100; // 默认0.1s
     
-    static char bigbuffer[1024*64] __attribute__((aligned(8))); //临时用一下，不会跨线程，也不会超出函数的作用域
+    static char bigbuffer[DEF_RECV_BUFSZ] __attribute__((aligned(8))); //临时用一下，不会跨线程，也不会超出函数的作用域
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
@@ -1606,10 +1586,12 @@ static void* btcp_tcpcli_loop(void *arg)
             {
                 if (handler->status == ESTABLISHED || handler->status==CLOSE_WAIT)
                 {
+                    #if 0
                     int space = btcp_send_queue_get_available_space(&handler->send_buf); // 获得发送缓冲区的空闲空间大小
                     //g_info("available space:%d bytes\n", space);
-                    if (space > 0 && handler->status == ESTABLISHED)
+                    if (space > 0)
                     {
+                        // todo:这里可以直接在send queue里做read，避免一次能存拷贝
                         ssize_t received = read(pfd[1].fd, bigbuffer, space);
                         if (received > 0)
                         {
@@ -1630,6 +1612,26 @@ static void* btcp_tcpcli_loop(void *arg)
                             #endif
                         }
                     }
+                    #else
+                    
+                    {
+                        bool fd_closed = false;
+                        int iret = btcp_send_queue_enqueue_zero_copy(&handler->send_buf, pfd[1].fd, &fd_closed);
+                        if (fd_closed)
+                        {
+                            //上层应用主动关闭，有两种情况
+                            g_info("detect user closed the conn");
+                            handler->user_socket_pair[1] = -1;
+                            if (handler->status == ESTABLISHED || handler->status == CLOSE_WAIT)
+                            {
+                               btcp_send_queue_push_fin(&handler->send_buf);
+                            }
+                        }
+                        
+                        btcp_try_send(handler);
+                     
+                    }
+                    #endif
                 }
             }
             
@@ -1810,7 +1812,7 @@ static int btcp_tcpsrv_circular_task(struct btcp_tcpsrv_handler * srv, char *big
 static void* btcp_tcpsrv_loop(void * arg)
 {
     struct btcp_tcpsrv_handler * srv = (struct btcp_tcpsrv_handler*)arg;
-    static char bigbuffer[100*1024]  __attribute__((aligned(8)));//用于收发包临时数据存储，不会跨线程、不会跨连接
+    static char bigbuffer[DEF_RECV_BUFSZ]  __attribute__((aligned(8)));//用于收发包临时数据存储，不会跨线程、不会跨连接
     int timeout = 100;
     
     while (1)
@@ -1878,7 +1880,7 @@ static void* btcp_tcpsrv_loop(void * arg)
                             pthread_mutex_unlock(&srv->all_connections_mutex);
                         }
                     }
-                    else if (conn->status != CLOSED)
+                    else if (conn->status != CLOSED && conn->status != SYNC_RCVD)
                     {
                         if (btcp_handle_data_rcvd(bigbuffer, pkg_len, conn, &client_addr))
                         {
@@ -1901,7 +1903,7 @@ static void* btcp_tcpsrv_loop(void * arg)
                     {
                         continue;
                     }
-                    
+                    #if 0
                     int space = btcp_send_queue_get_available_space(&handler->send_buf); // 获得发送缓冲区的空闲空间大小
                     if (space > 0)
                     {
@@ -1923,6 +1925,22 @@ static void* btcp_tcpsrv_loop(void * arg)
                             }
                         }
                     }
+                    #else
+                    bool fd_closed = false;
+                    int iret = btcp_send_queue_enqueue_zero_copy(&handler->send_buf, fds[i].fd, &fd_closed);
+                    if (fd_closed)
+                    {
+                        // 上层应用主动关闭，有两种情况
+                         g_info("server side, user closed the conn");
+                        if (handler->status == ESTABLISHED || handler->status == CLOSE_WAIT)
+                        {
+                            btcp_send_queue_push_fin(&handler->send_buf);
+                        }
+                    }
+                    
+                    btcp_try_send(handler);
+                    
+#endif
                 }
             }
         }

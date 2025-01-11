@@ -40,6 +40,8 @@ uint32_t btcp_sequence_step_back(uint32_t original, uint32_t steps);
 //从系统启动开始的时间，不受系统时间更改影响，毫秒精度
 uint64_t btcp_get_monotonic_msec(); 
 
+int btcp_nonblock_send(int fd, const char *buf, int sz);
+
 
 /*
  * tcp发送窗口里的数据是一段一段发送出去的，每一段用range来描述

@@ -22,10 +22,10 @@ int main(int argc, char** argv)
         return -1;
     }
     btcp_tcpsrv_new_loop_thread(&srv);
-    static char bigbuffer[100*1024] __attribute__((aligned(8))); // 用于临时收发包，不会跨线程也不会跨连接使用
+    static char bigbuffer[DEF_RECV_BUFSZ] __attribute__((aligned(8))); // 用于临时收发包，不会跨线程也不会跨连接使用
     uint64_t total_read = 0;
     uint64_t total_write = 0;
-    char last_char = 0;
+    
     while (1)
     {
         //int status = ESTABLISHED;
@@ -59,18 +59,14 @@ int main(int argc, char** argv)
                         if (received > 0)
                         {
                             bigbuffer[received] = 0;
-                            printf("[%s]\n", bigbuffer);
+                            //printf("[%s]\n", bigbuffer);
                             total_read += received;
-                            printf(">>>>>>>>>total read=%llu\n", total_read);
-                            if (last_char != 0 && last_char != 'z')
-                            {
-                                g_assert (last_char+1 == bigbuffer[0]);
-                                last_char = bigbuffer[received-1];
-                            }
+                            g_warning("total read=%llu\n", total_read);
+                            
                             int offset = 0;
                             //echo 回去
                             // 因为 fd都是非阻塞的，可能需要多次发送。
-                            #if 1
+                            #if 0
                             while (1)
                             {
                                 int written = write(pfd[i].fd, bigbuffer+offset, received - offset);

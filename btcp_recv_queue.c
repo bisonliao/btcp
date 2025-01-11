@@ -116,6 +116,22 @@ size_t btcp_recv_queue_dequeue(struct btcp_recv_queue *queue, unsigned char *dat
     queue->size -= bytes_to_dequeue;
     return bytes_to_dequeue;
 }
+int btcp_recv_queue_throw_data_to_user(struct btcp_recv_queue *queue, int fd)
+{
+    if (queue->head + queue->size <= queue->capacity) //不用分两段
+    {
+        btcp_nonblock_send(fd, queue->buffer + queue->head, queue->size);
+    }
+    else
+    {
+        int size1 = queue->capacity - queue->head;
+        int size2 = queue->size - size1;
+        btcp_nonblock_send(fd, queue->buffer + queue->head, size1);
+        btcp_nonblock_send(fd, queue->buffer, size2);
+    }
+    queue->head = queue->tail;
+    queue->size = 0;
+}
 
 // 获取队列当前大小
 int btcp_recv_queue_size(struct btcp_recv_queue *queue) {

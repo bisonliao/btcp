@@ -31,8 +31,8 @@ int btcp_free_local_port(unsigned short port);
 unsigned int btcp_get_random();
 
 
-#define DEF_RECV_BUFSZ (4096)
-#define DEF_SEND_BUFSZ (4096)
+#define DEF_RECV_BUFSZ (4096*100)
+#define DEF_SEND_BUFSZ (4096*100)
 
 
 #define ERR_GET_MTU_FAIL  (-100)

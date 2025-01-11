@@ -64,4 +64,7 @@ int btcp_send_queue_set_start_seq(struct btcp_send_queue *queue, uint64_t start)
 // 在合适的时候，引擎会把这个fin 请求发给对端
 int btcp_send_queue_push_fin(struct btcp_send_queue *queue);
 
+// 为了做到0拷贝，直接在sendbuffer里做收用户数据的操作
+int btcp_send_queue_enqueue_zero_copy(struct btcp_send_queue *queue, int fd, bool* fd_closed);
+
 #endif // BTCP_SEND_QUEUE_H
