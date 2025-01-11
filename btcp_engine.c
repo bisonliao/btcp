@@ -70,7 +70,6 @@ int btcp_tcpsrv_listen(const char * ip, short int port, struct btcp_tcpsrv_handl
     strcpy(srv->my_ip, ip);
     srv->local_port = port;
     
-    
     {
         int sockfd;
         struct sockaddr_in server_addr, client_addr;
@@ -79,6 +78,7 @@ int btcp_tcpsrv_listen(const char * ip, short int port, struct btcp_tcpsrv_handl
         // 创建 UDP 套接字
         if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
         {
+            g_critical("create udp socket failed!%s", strerror(errno));
             btcp_errno = ERR_INIT_UDP_FAIL;
             return -1;
         }
@@ -93,6 +93,7 @@ int btcp_tcpsrv_listen(const char * ip, short int port, struct btcp_tcpsrv_handl
         // 绑定套接字到指定端口
         if (bind(sockfd, (const struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
         {
+            g_critical("bind udp socket failed!%s", strerror(errno));
             btcp_errno = ERR_INIT_UDP_FAIL;
             close(sockfd);
             return -1;
@@ -100,16 +101,17 @@ int btcp_tcpsrv_listen(const char * ip, short int port, struct btcp_tcpsrv_handl
 
         srv->udp_socket = sockfd;
     }
+    g_message("creating udp socket success.");
     {
         pthread_mutex_init(&srv->all_connections_mutex, NULL);
         srv->all_connections = g_hash_table_new_full(btcp_tcpconn_hash, btcp_tcpconn_equal,
                 btcp_tcpconn_key_destroy, btcp_tcpconn_value_destroy);
         if (srv->all_connections == NULL)
         {
+            g_critical("g_hash_table_new_full() failed!");
             btcp_errno = ERR_MEM_ERROR;
             return -1;
-        }
-        
+        }  
     }
     return 0;
 }  
@@ -126,11 +128,13 @@ struct btcp_tcpconn_handler *  btcp_handle_sync_rcvd1(char * bigbuffer,
 
     if (!btcp_check_tcphdr_flag(FLAG_SYN, (hdr->doff_res_flags)) ) 
     {
+        g_critical("in %s(), btcp_check_tcphdr_flag() result is unexpected.", __FUNCTION__);
         btcp_errno = ERR_INVALID_PKG;
         return NULL;
     }
     if ( ntohs(hdr->dest) != srv->local_port)
     {
+        g_critical("in %s(), port is unexpected.", __FUNCTION__);
         btcp_errno = ERR_PORT_MISMATCH;
         return NULL;
     }
@@ -140,11 +144,13 @@ struct btcp_tcpconn_handler *  btcp_handle_sync_rcvd1(char * bigbuffer,
         handler = malloc(sizeof(struct btcp_tcpconn_handler));
         if (handler == NULL)
         {
+            g_critical("in %s(), malloc() result is unexpected.", __FUNCTION__);
             btcp_errno = ERR_MEM_ERROR;
             return NULL;
         }
         if (btcp_init_tcpconn(handler))
         {
+            g_critical("in %s(), btcp_init_tcpconn() result is unexpected.", __FUNCTION__);
             free(handler);
             return NULL;
         }
@@ -167,11 +173,9 @@ struct btcp_tcpconn_handler *  btcp_handle_sync_rcvd1(char * bigbuffer,
             return NULL;
         }
         //todo:测试用，要注释掉
-        handler->mss = 5;
+        //handler->mss = 5;
         
         handler->cong_wnd = 1;
-
-       
         handler->local_port = srv->local_port;
         
         handler->local_seq = btcp_get_random() % UINT16_MAX;
@@ -204,6 +208,8 @@ struct btcp_tcpconn_handler *  btcp_handle_sync_rcvd1(char * bigbuffer,
     //收到了对端的合法报文，认为该连接处于活跃状态，更新保活时间戳
     handler->alive_time_stamp = time(NULL);
 
+    
+
     //send ack package
     memset(tcphdr, 0, sizeof(union btcp_tcphdr_with_option));
     hdr->ack_seq = htonl(handler->peer_seq);
@@ -230,15 +236,25 @@ struct btcp_tcpconn_handler *  btcp_handle_sync_rcvd1(char * bigbuffer,
 
 
 
-    if (sendto(handler->udp_socket, hdr, offset, 0, (const struct sockaddr *)&server_addr, sizeof(server_addr)) != offset)
+    int iret = sendto(handler->udp_socket, hdr, offset, 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
+    if (iret < 0)
     {
-        btcp_errno = ERR_UDP_COMMM_FAIL;
-        close(handler->udp_socket);
-        free(handler);
-        return NULL;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            g_critical("in %s(), sendto()failed, it would block.", __FUNCTION__);
+        }
+        else
+        {
+            g_critical("in %s(), sendto()failed, %s", __FUNCTION__, strerror(errno));
+            btcp_errno = ERR_UDP_COMMM_FAIL;
+            close(handler->udp_socket);
+            free(handler);
+            return NULL;
+        } 
     }
     handler->status = SYNC_RCVD;
 
+    g_message("recv SYN request, responded");
     btcp_print_tcphdr((const char *)hdr, "send ack:");
     return handler;
 }
@@ -255,6 +271,7 @@ int btcp_handle_sync_rcvd2(char * bigbuffer,  struct btcp_tcpconn_handler * hand
 
     if ( !btcp_check_tcphdr_flag(FLAG_ACK, (hdr->doff_res_flags)) ) 
     {
+        g_critical("in %s(), btcp_check_tcphdr_flag() result is unexpected.", __FUNCTION__);
         btcp_errno = ERR_INVALID_PKG;
         return -1;
     }
@@ -262,13 +279,14 @@ int btcp_handle_sync_rcvd2(char * bigbuffer,  struct btcp_tcpconn_handler * hand
     if ( ntohs(hdr->source) != handler->peer_port ||
         ntohs(hdr->dest) != handler->local_port)
     {
+        g_critical("in %s(), port is unexpected.", __FUNCTION__);
         btcp_errno = ERR_PORT_MISMATCH;
         return -1;
     }
     uint32_t ack_seq = ntohl(hdr->ack_seq);
     if (ack_seq != (handler->local_seq + 1) )
     {
-       
+        g_critical("in %s(), sequence is unexpected.", __FUNCTION__);
         btcp_errno = ERR_SEQ_MISMATCH;
         return -1;
     }
@@ -277,7 +295,7 @@ int btcp_handle_sync_rcvd2(char * bigbuffer,  struct btcp_tcpconn_handler * hand
 
     if ((handler->peer_seq) !=ntohl(hdr->seq))
     {
-        
+         g_critical("in %s(), sequence is unexpected.", __FUNCTION__);
         btcp_errno = ERR_SEQ_MISMATCH;
         return -1;
     }
@@ -285,10 +303,10 @@ int btcp_handle_sync_rcvd2(char * bigbuffer,  struct btcp_tcpconn_handler * hand
 
     // 创建一对已连接的 Unix Domain Socket
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, handler->user_socket_pair) == -1) {
-        perror("socketpair");
-        exit(EXIT_FAILURE);
+        g_critical("in %s(), socketpair()failed, %s", __FUNCTION__, strerror(errno));
+        return -1;
     }
-    g_info("create socketpair:%d,%d", handler->user_socket_pair[0], handler->user_socket_pair[1]);
+    g_debug("create socketpair:%d,%d", handler->user_socket_pair[0], handler->user_socket_pair[1]);
     
     btcp_set_socket_nonblock(handler->user_socket_pair[0]);
     btcp_set_socket_nonblock(handler->user_socket_pair[1]);
@@ -297,7 +315,7 @@ int btcp_handle_sync_rcvd2(char * bigbuffer,  struct btcp_tcpconn_handler * hand
     handler->alive_time_stamp = time(NULL);
     
     handler->status = ESTABLISHED;
-    printf("established!\n");
+    g_message("established!\n");
     return 0;
 }
 
@@ -311,7 +329,7 @@ int btcp_increase_cong_wnd(struct btcp_tcpconn_handler *handler)
     if (handler->cong_wnd < handler->cong_wnd_threshold)
     {
         handler->cong_wnd++;
-        g_info("congest wnd:%d", handler->cong_wnd);
+        g_message("congest wnd updated to %d", handler->cong_wnd);
     }
     else // 超过 阈值后，就是每个rtt轮次加1， 我这里实现为简单的每秒加1
     {
@@ -324,7 +342,7 @@ int btcp_increase_cong_wnd(struct btcp_tcpconn_handler *handler)
         else
         {
             handler->cong_wnd++;
-            g_info("congest wnd:%d", handler->cong_wnd);
+            g_message("congest wnd updated to %d", handler->cong_wnd);
             handler->cong_wnd_prev_inc_time = current; //记录时间，避免重复加
         }
     }
@@ -347,8 +365,7 @@ int btcp_shrink_cong_wnd(struct btcp_tcpconn_handler *handler, bool quick)
         handler->cong_wnd = handler->cong_wnd_threshold;
     }
 
-    g_info("congest wnd:%d", handler->cong_wnd);
-    
+    g_message("congest wnd shrinks to %d", handler->cong_wnd);
     
     return 0;
 }
@@ -364,22 +381,7 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
     
     if (ack_seq32 < handler->local_seq) //可能发生了回绕
     {
-        ack_seq64 = btcp_sequence_round_out(ack_seq32);
-
-        #if 0
-
-        const uint64_t DISTANCE = handler->mss * 1024;
-        if ( handler->local_seq + DISTANCE > UINT32_MAX) // 当前local_seq很靠近UINT32_MAX
-        {
-            ack_seq64 = btcp_sequence_round_out(ack_seq32);
-        }
-        else
-        {
-            g_warning("ack seq invalid. throw away.");
-            return 0;
-        }
-        #endif
-        
+        ack_seq64 = btcp_sequence_round_out(ack_seq32);    
     }
     //挥手时候的特殊情况
     if (handler->status == FIN_WAIT1)
@@ -397,6 +399,8 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
         g_info("local sequence step forward to %u", handler->local_seq);
         // 删除可能的定时器
         btcp_timer_remove_range(&handler->timeout, &range);
+
+        g_message("in fin_wait1 status, rcvd ack to fin");
         return 0;
     }
     if (handler->status == LAST_ACK)
@@ -414,6 +418,8 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
 
         // 删除可能的定时器
         btcp_timer_remove_range(&handler->timeout, &range);
+
+        g_message("in last_ack status, rcvd ack to fin");
         return 0;
     }
 
@@ -436,14 +442,14 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
             btcp_shrink_cong_wnd(handler, true);
             btcp_timer_remove_by_from(&handler->timeout, handler->local_seq);//删除计时器里起始seq等于local_seq的记录
             //btcp_try_send(handler); //删掉计时器里的记录，其实后面就会比较及时的重发
-
-            g_info("repeated ack 3 times!");
+            g_message("repeated ack 3 times!");
         }
     }
     else
     {
         if (ack_seq64 < handler->local_seq) // 比当前已经确认的seq小，丢弃
         {
+            g_debug("ack sequence is little than current! %llu, %u", ack_seq64, handler->local_seq);
             return 0;
         }
         handler->repeat_ack = 0;
@@ -458,7 +464,6 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
         g_info("local sequence step forward to %u", handler->local_seq);
         // 删除可能的定时器
         btcp_timer_remove_range(&handler->timeout, &range);
-
         btcp_increase_cong_wnd(handler);
     }
     //继续处理selective ack的信息
@@ -491,8 +496,7 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
 }
 
 
-
- int btcp_keep_alive(struct btcp_tcpconn_handler *handler, char *bigbuffer, bool is_server)
+int btcp_keep_alive(struct btcp_tcpconn_handler *handler, char *bigbuffer, bool is_server)
 {
     time_t current = time(NULL);
     if (is_server)
@@ -501,6 +505,7 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
         {
             if (current - 30 >  handler->alive_time_stamp)
             {
+                g_info("half connection timeout");
                 return 1; // 已经超时了，需要上层处理
             }
             else
@@ -519,7 +524,7 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
         if (current - 15 > handler->alive_time_stamp &&
             current - 15 > handler->keepalive_request_time)
         {
-            #if 1 
+            
             union btcp_tcphdr_with_option *tcphdr = (union btcp_tcphdr_with_option *)bigbuffer;
             struct btcp_tcphdr * hdr = &tcphdr->base_hdr;
 
@@ -550,8 +555,6 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
             }
             g_info("send keep alive request, %d", __LINE__);
             handler->keepalive_request_time = current;
-            
-            #endif
         }
     }
     
@@ -590,48 +593,7 @@ int btcp_throw_data_to_user(struct btcp_tcpconn_handler * handler)
     }
     return 0;
 }
-#if 0
-static btcp_check_sequence(struct btcp_tcpconn_handler * handler, uint32_t seq32, bool is_keepavlie_req)
-{
-    if (seq32 < handler->peer_seq) //处理发过来的报文seq偏小的特殊情况 
-    {
-        if (is_keepavlie_req) //前面判断过这是个keep alive报文，那没事，是合法的
-        {
 
-        }
-        else 
-        {
-            //还可能发生了seq回绕, 超出UINT32_MAX又从0开始了
-            // 特征就是当前记录的sequence比较靠近UINT32_MAX
-            const uint64_t DISTANCE = handler->mss * 1024;
-            if ( handler->peer_seq + DISTANCE > UINT32_MAX) 
-            {
-                int recv_wndsz = btcp_recv_queue_get_available_space(&handler->recv_buf);
-                if (btcp_sequence_round_out(seq32) - handler->peer_seq > recv_wndsz) // 那也太大了
-                {
-                    g_warning("invalid pkg at %s %d, %u,%u", __FILE__, __LINE__, seq32, handler->peer_seq);
-                    return 0;
-                }
-            }
-            else //不属于回绕的情况
-            {
-                g_warning("invalid pkg at %s %d, %u,%u", __FILE__, __LINE__, seq32, handler->peer_seq);
-                return 0;
-            }
-        }
-    } 
-    if (seq32 > handler->peer_seq)
-    {
-        // 有一种情况是 peer_seq刚刚回绕到 小整数例如2，但seq32还是旧一点的seq例如40亿
-        // 这种就是过期的请求
-        if (step > 1024 * 1024 * 100 &&
-            queue->start_seq < 1024 * 100)
-        {
-            step = btcp_sequence_round_out(queue->start_seq) - position;
-        }
-    }
-}
-#endif
 
 
 int btcp_enter_close_wait(struct btcp_tcpconn_handler *handler, 
@@ -1074,12 +1036,14 @@ int btcp_handle_sync_sent(char * bigbuffer,  struct btcp_tcpconn_handler * handl
     if (!btcp_check_tcphdr_flag(FLAG_SYN, (hdr->doff_res_flags)) ||
         !btcp_check_tcphdr_flag(FLAG_ACK, (hdr->doff_res_flags))) 
     {
+        g_critical("in %s, flag in hdr header in unexpected!", __FUNCTION__);
         btcp_errno = ERR_INVALID_PKG;
         return -1;
     }
     if ( ntohs(hdr->source) != handler->peer_port ||
         ntohs(hdr->dest) != handler->local_port)
     {
+        g_critical("in %s, port in hdr header in unexpected!", __FUNCTION__);
         btcp_errno = ERR_PORT_MISMATCH;
         return -1;
     }
@@ -1089,6 +1053,7 @@ int btcp_handle_sync_sent(char * bigbuffer,  struct btcp_tcpconn_handler * handl
     uint32_t ack_seq = ntohl(hdr->ack_seq);
     if (ack_seq != (handler->local_seq + 1) )
     {
+        g_critical("in %s, ack sequ in hdr header in unexpected!", __FUNCTION__);
         btcp_errno = ERR_SEQ_MISMATCH;
         return -1;
     }
@@ -1145,8 +1110,7 @@ int btcp_handle_sync_sent(char * bigbuffer,  struct btcp_tcpconn_handler * handl
     int iret = sendto(handler->udp_socket, hdr, offset, 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
     if (iret != offset)
     {
-        perror("sendto:");
-        printf("iret=%d\n", iret);
+        g_critical("sendto() failed! %s", strerror(errno));
         btcp_errno = ERR_UDP_COMMM_FAIL;
         close(handler->udp_socket);
         return -1;
@@ -1155,7 +1119,7 @@ int btcp_handle_sync_sent(char * bigbuffer,  struct btcp_tcpconn_handler * handl
 
     // 创建一对已连接的 Unix Domain Socket
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, handler->user_socket_pair) == -1) {
-        perror("socketpair");
+        g_critical("socketpair() failed! %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
     g_info("socketpair() success, %d, %d", handler->user_socket_pair[0],
@@ -1273,13 +1237,7 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
     {
         return 0;
     }
-    #if 0
-    g_info("send_wndsz:%d, mss:%d, cong_wnd:%d, peer wndsz:%d", 
-            send_wndsz,
-            handler->mss,
-            handler->cong_wnd,
-            handler->peer_recv_wnd_sz);
-      #endif      
+     
     int datasz_in_queue = btcp_send_queue_size(&handler->send_buf);
     static unsigned char bigbuffer[100 * 1024] __attribute__((aligned(8))); // 临时用一下，不会跨线程，也不会超出函数的作用域
     struct btcp_range *range_to_send = NULL;
@@ -1301,7 +1259,7 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
         {
             range_to_send->to = (uint64_t)(handler->send_buf.start_seq) + datasz_in_queue - 1; // 闭区间，所以要减一
         }
-        //g_info("data range to send:[%llu, %llu]", range_to_send->from, range_to_send->to);
+        g_debug("data range to send:[%llu, %llu]", range_to_send->from, range_to_send->to);
 
         
         range_list_to_send = g_list_append(NULL, range_to_send);
@@ -1355,17 +1313,17 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
                 }
             }
         }
+
         {
 
-#ifdef _DETAIL_LOG_
-            g_info("%lu, onraod data range:", range_list_sent);
+            g_debug("%lu, onraod data range:", range_list_sent);
 
             for (const GList *iter = range_list_sent; iter != NULL; iter = iter->next)
             {
                 struct btcp_range *a_range = (struct btcp_range *)iter->data;
-                g_info("[%llu, %llu]", a_range->from, a_range->to);
+                g_debug("[%llu, %llu]", a_range->from, a_range->to);
             }
-#endif
+
         }
         
         if (btcp_range_subtract(range_list_to_send, range_list_sent, &range_list_result1))
@@ -1682,7 +1640,7 @@ static void* btcp_tcpcli_loop(void *arg)
         }
         else
         {
-            perror("poll");
+            g_critical("poll(),%s", strerror(errno));
             break;
         }
         
@@ -1724,12 +1682,12 @@ int btcp_tcpcli_new_loop_thread(struct btcp_tcpconn_handler *handler)
 
     // 创建线程
     if (pthread_create(&thread_id, NULL, btcp_tcpcli_loop, (void *)handler) != 0) {
-        perror("pthread_create");
+        g_critical("pthread_create,%s", strerror(errno));
         return -1;
     }
     if (pthread_detach(thread_id))
     {
-        perror("pthread_detach");
+        g_critical("pthread_detach,%s", strerror(errno));
         return -1;
     }
 
