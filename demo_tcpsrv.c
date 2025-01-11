@@ -23,7 +23,8 @@ int main(int argc, char** argv)
     }
     btcp_tcpsrv_new_loop_thread(&srv);
     static char bigbuffer[100*1024] __attribute__((aligned(8))); // 用于临时收发包，不会跨线程也不会跨连接使用
-    uint64_t total = 0;
+    uint64_t total_read = 0;
+    uint64_t total_write = 0;
     char last_char = 0;
     while (1)
     {
@@ -59,13 +60,45 @@ int main(int argc, char** argv)
                         {
                             bigbuffer[received] = 0;
                             printf("[%s]\n", bigbuffer);
-                            total += received;
-                            printf(">>>>>>>>>total=%llu\n", total);
+                            total_read += received;
+                            printf(">>>>>>>>>total read=%llu\n", total_read);
                             if (last_char != 0 && last_char != 'z')
                             {
                                 g_assert (last_char+1 == bigbuffer[0]);
                                 last_char = bigbuffer[received-1];
                             }
+                            int offset = 0;
+                            //echo 回去
+                            // 因为 fd都是非阻塞的，可能需要多次发送。
+                            #if 1
+                            while (1)
+                            {
+                                int written = write(pfd[i].fd, bigbuffer+offset, received - offset);
+                                if (written < 0)
+                                {
+                                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                                    {
+                                        usleep(100);
+                                        continue;
+                                    }
+                                    else
+                                    {
+                                        perror("write");
+                                        return -1;
+                                    }
+                                }
+                                else
+                                {
+                                    total_write += written;
+                                    offset += written;
+                                    printf(">>>>>>>>>total write=%llu\n", total_write);
+                                    if (offset == received)
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                            #endif
                         }
                         else if (received == 0)
                         {

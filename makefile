@@ -9,7 +9,7 @@ demo_cli:demo_tcpcli.c libbtcp.a
 	gcc -o demo_cli  $^  $(CFLAGS) $(CLIBS)
 demo_srv:demo_tcpsrv.c libbtcp.a
 	gcc -o demo_srv $^  $(CFLAGS) $(CLIBS)
-	scp srv pi@192.168.0.11:~/btcp/
+	scp demo_srv pi@192.168.0.11:~/btcp/
 
 
 OBJS = $(FILES:.c=.o)

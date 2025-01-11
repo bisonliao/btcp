@@ -355,6 +355,8 @@ int btcp_shrink_cong_wnd(struct btcp_tcpconn_handler *handler, bool quick)
 
 int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_handler *handler)
 {
+    // 处理ack报文的时候，没有管对端发过来的sequence是否是和本段的peer_seq一致
+
     struct btcp_tcphdr * hdr = &tcphdr->base_hdr;
     uint32_t ack_seq32 = ntohl(hdr->ack_seq);
     uint64_t ack_seq64 = ack_seq32;
@@ -423,6 +425,7 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
         g_warning("ack sequence is too big! %u, %u", ack_seq32, handler->local_seq);
         return -1;
     }
+
     if (handler->local_seq == ack_seq32) // 收到对当前sequence的重复确认，非正常情况
     {
         handler->repeat_ack++;
@@ -439,6 +442,10 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
     }
     else
     {
+        if (ack_seq64 < handler->local_seq) // 比当前已经确认的seq小，丢弃
+        {
+            return 0;
+        }
         handler->repeat_ack = 0;
         // todo:这里真的就信任网络上发过来的一个ack报文而直接修改seq吗？
         // 是不是应该做一些检查和限制
@@ -751,7 +758,28 @@ int btcp_handle_data_rcvd(char * bigbuffer, int pkg_len, struct btcp_tcpconn_han
     if (seq32 < handler->peer_seq &&  
         btcp_sequence_round_out(seq32) -handler->peer_seq > recv_wndsz)
     {
-        if (!got_keepalive_request)
+        if (got_keepalive_request) //如果是keepalive请求，seq会偏小正常
+        {
+
+        }
+        // 如果是ack报文，不携带用户数据，也正常
+        else if( data_len == 0 && btcp_check_tcphdr_flag(FLAG_ACK, hdr->doff_res_flags))
+        {
+            /*
+             * 实际观测到的一个场景：
+             * 时刻1：client发出一个数据包,用户数据长度为1，seq=39146
+             * 时刻1：server发出一个数据包，用户数据长度为5，seq=54533
+             * 
+             * 时刻2：server收到client的数据，ack。seq=54533, ack_seq=39147 --seq是不是不合理
+             * 时刻2：client收到server的数据，peer_seq增长为 54538
+             * 
+             * 时刻3：client收到server的ack，发现seq=54533, 比54538小！！！
+             * 
+             * 纯ack报文的首部sequence number怎么填写？AI读了下面的文档后告诉我说要填SDN.NXT
+             * https://www.rfc-editor.org/rfc/rfc793
+             */
+        }
+        else //其他情况应该是陈旧的报文，或者非法报文，丢弃
         {
             g_warning("invalid pkg at %s %d, %u,%u", __FILE__, __LINE__, seq32, handler->peer_seq);
             return 0;
@@ -1404,11 +1432,11 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
                 btcp_set_tcphdr_offset(offset, &hdr->doff_res_flags);
                 offset += datalen;
 
-                // 模拟20%的丢包率 . todo:要改回去
+                // 模拟丢包率 . todo:要改回去
                 unsigned int r = btcp_get_random() % 20;
                 int sent_len;
                 if (r != 0)
-                // if (1)
+                //if (1)
                 {
                     sent_len = sendto(handler->udp_socket, hdr, offset, 0, (const struct sockaddr *)&server_addr, sizeof(server_addr));
                     if (sent_len < 0) // udp发包，不存在只发部分报文的情况，要么完整报文，要么负1

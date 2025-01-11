@@ -23,8 +23,9 @@ int main(int argc, char** argv)
     
     btcp_tcpcli_new_loop_thread(&handler); // 启动tcp引擎的工作线程
     
-    uint64_t total = 0; // 统计用户层发送了多少字节
-    while (total < 10000)
+    uint64_t total_write = 0; // 统计用户层发送了多少字节
+    uint64_t total_read = 0;
+    while (1)
     {
         if (handler.status != ESTABLISHED)
         {
@@ -32,26 +33,56 @@ int main(int argc, char** argv)
             continue;
         }
 
-        // 准备 26个英文小写字母
-        char buf[1024];
-        ssize_t sz = 26;
-        
-        for (int i = 0; i < sz; ++i)
+         if (total_write < 1997)
         {
-            buf[i] = 'a'+i;
+            // 准备 26个英文小写字母
+            char buf[1024];
+            ssize_t sz = 26;
+
+            for (int i = 0; i < sz; ++i)
+            {
+                buf[i] = 'a' + i;
+            }
+            int offset = 0;
+
+            // 不断的通过tcp连接发送给服务器
+            while (1)
+            {
+                int iret = write(handler.user_socket_pair[0], buf + offset, sz - offset);
+                if (iret < 0)
+                {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    {
+                        usleep(100);
+                        continue;
+                    }
+                    else
+                    {
+                        perror("write");
+                        return -1;
+                    }
+                }
+                else
+                {
+                    total_write += iret;
+                    offset += iret;
+                    printf(">>>>>>>>>total write=%llu\n", total_write);
+                    if (offset == sz)
+                    {
+                        break;
+                    }
+                }
+            }
         }
-        int offset = 0;
-       
-        // 不断的通过tcp连接发送给服务器
-        while (1)
+        while (1) // 不断的收数据
         {
-            int iret = write(handler.user_socket_pair[0], buf+offset, sz-offset);
+            char buf[1024];
+            int iret = read(handler.user_socket_pair[0], buf, sizeof(buf));
             if (iret <0 )
             {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
                 {
-                    usleep(100);
-                    continue;
+                    break;
                 }
                 else
                 {
@@ -59,21 +90,20 @@ int main(int argc, char** argv)
                     return -1;
                 }
             }
-            else 
+            if (iret == 0)
             {
-                total += iret;
-                offset += iret;
-                g_info(">>>>>>>>>total=%llu", total);
-                if (offset == sz)
-                {
-                    break;
-                }
-    
+                break;
             }
-            
+            else  // iret > 0
+            {
+                total_read += iret;
+                
+                printf(">>>>>>>>>total read=%llu\n", total_read);
+                
+            }
         }
        
-        usleep(1000000*3);
+        usleep(1000000*1);
         
     }
     g_info("client close the conn");
