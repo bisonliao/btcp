@@ -5,14 +5,21 @@
 #include <pthread.h>
 #include <glib.h>
 #include <unistd.h>
+#include <signal.h>
 /*
  * 正如文件名字所说，这是一个 tcp client的用户程序 demo
  */
 
+void signal_handler(int signum) {
+    printf("Caught signal %d, exiting...\n", signum);
+    exit(0); // 正常退出
+}
 
 int main(int argc, char** argv)
 {
     static struct btcp_tcpconn_handler handler;
+
+    signal(SIGINT, signal_handler);
     
     if (btcp_tcpcli_connect("192.168.0.11", 8080, &handler))
     {
@@ -35,7 +42,7 @@ int main(int argc, char** argv)
             continue;
         }
 
-        if (total_write < 100000000)
+        if (total_write < (1000000 * 100))
         {
             // 准备 26个英文小写字母
             

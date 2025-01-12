@@ -1194,6 +1194,46 @@ int btcp_send_fin_request(struct btcp_tcpconn_handler *handler,
     return 0;
 }
 
+//使用sendmsg来减少一次内存拷贝
+int btcp_sendmsg(int fd, struct sockaddr_in* server_addr,
+                struct iovec  vec[], int vec_num)
+{
+    
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_name = server_addr;       // 目标地址
+    msg.msg_namelen = sizeof(struct sockaddr_in);
+    msg.msg_iov = vec;                 // 分散-聚集缓冲区
+    msg.msg_iovlen = vec_num;                // 缓冲区数量
+
+    // 发送数据
+    while (1)
+    {
+        ssize_t bytes_sent = sendmsg(fd, &msg, 0);
+        if (bytes_sent < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                usleep(1);
+                continue;
+            }
+            else
+            {
+                g_critical("sendmsg() failed, %s", strerror(errno));
+                return -1;
+            }
+            
+        }
+        else // udp socket，要么-1，要么发完整了
+        {
+            break;
+        }
+        
+    }
+    return 0;
+
+}
+
 int btcp_try_send(struct btcp_tcpconn_handler *handler)
 {
     int retcode = -1;
@@ -1356,6 +1396,8 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
                 {
                     datalen = handler->mss;
                 }
+
+                #if 0
                 //想要性能极致的话，这里可以避免一次数据拷贝，直接在send quene里做sendto
                 if (btcp_send_queue_fetch_data(&handler->send_buf, 
                                     b_range.from, 
@@ -1397,6 +1439,36 @@ int btcp_try_send(struct btcp_tcpconn_handler *handler)
                     g_info("package lost![%llu, %llu]", b_range.from, b_range.from + datalen - 1);
                     sent_len = offset;
                 }
+                
+                #else // sendmsg  version, enhance performance
+                // 改用这种方式，性能提升还比较明显，带宽由33Mbps提升到了38Mbps。 
+                // 基准测试工具是99Mbps,应该就是交换机的性能。硬件环境是两台树莓派通过百兆交换机连接在一起
+
+                g_info("send a tcp package[%llu, %llu]", b_range.from, b_range.from + datalen - 1);
+
+                hdr->seq = htonl(btcp_sequence_round_in(b_range.from));
+                offset = sizeof(struct btcp_tcphdr) + datalen;
+
+                struct iovec iov[3];
+                int iov_num = 0;
+
+                iov[0].iov_base = hdr;
+                iov[0].iov_len = sizeof(struct btcp_tcphdr);
+                iov_num++;
+
+                int seg_num =btcp_send_queue_fetch_data2(&handler->send_buf, 
+                                    b_range.from, 
+                                    b_range.from + datalen - 1, &iov[1]);
+                if (seg_num != 1 && seg_num != 2)
+                {
+                    g_critical("btcp_send_queue_fetch_data2() failed, %d", seg_num);
+                    break;
+                }
+                iov_num += seg_num;
+
+                btcp_sendmsg(handler->udp_socket, &server_addr, iov, iov_num);
+
+                #endif
                 // g_info("sent successfully, len:%d\n", sent_len);
                 //  记录超时事件, timer里记录的range的sequence都是32bit范围内的值，方便与ack报文的sequence对应
                 struct btcp_range c_range; // c_range是32bit短范围内的
@@ -1612,7 +1684,7 @@ static void* btcp_tcpcli_loop(void *arg)
                             #endif
                         }
                     }
-                    #else
+                    #else //经过对比测试，发现这里 0 拷贝对整体性能帮助不大
                     
                     {
                         bool fd_closed = false;

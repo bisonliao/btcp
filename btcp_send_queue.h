@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+
 
 /*
  * 发送队列的实现，其基础是一个定长数组实现的循环队列
@@ -55,6 +58,9 @@ void btcp_send_queue_clear(struct btcp_send_queue *queue);
 // 该函数用于发送窗口比较大时候，一次性发送多个mss，那就会逐段的从队列中获取待发送数据
 // 该函数调用，不会移动底层循环队列的 head /tail，仅仅拷贝数据，循环队列对此操作一无所知
 int btcp_send_queue_fetch_data(struct btcp_send_queue *queue, uint64_t from, uint64_t to, unsigned char* data); 
+int btcp_send_queue_fetch_data2(struct btcp_send_queue *queue, 
+                        uint64_t from, uint64_t to, 
+                        struct iovec * vec); 
 
 //初始化start_seq，或者修改seq实现发送窗口后移
 // 参数start是想要设置的起始seq，为了方便，将类型设置为uint64_t，但大小不超过UINT32_MAX

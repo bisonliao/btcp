@@ -229,6 +229,38 @@ int btcp_send_queue_fetch_data(struct btcp_send_queue *queue, uint64_t from, uin
     return 0;
 }
 
+int btcp_send_queue_fetch_data2(struct btcp_send_queue *queue, 
+                        uint64_t from, uint64_t to, 
+                        struct iovec * vec)
+{
+    uint64_t step1, step2;
+    if (calc_step(queue, from, &step1) != 0 ||
+        calc_step(queue, to, &step2) != 0)
+    {
+        return -1;
+    }
+    uint64_t start = (queue->head + step1) % queue->capacity;
+    uint64_t end = (queue->head + step2) % queue->capacity;
+    if (end < start) // 有两段数据
+    {
+        vec[0].iov_base = queue->buffer+start;
+        vec[0].iov_len = queue->capacity - start;
+
+        vec[1].iov_base = queue->buffer;
+        vec[1].iov_len = end+1;
+
+        return 2;
+    }
+    else //一段数据
+    {
+        vec[0].iov_base = queue->buffer+start;
+        vec[0].iov_len = end - start + 1;
+        return 1;
+    }
+    return -2;
+    
+}
+
 //初始化start_seq，或者修改seq实现发送窗口后移
 int btcp_send_queue_set_start_seq(struct btcp_send_queue *queue, uint64_t start)
 {

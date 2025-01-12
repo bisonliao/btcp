@@ -5,16 +5,22 @@
 #include <err.h>
 #include <errno.h>
 #include  <glib.h>
+#include <signal.h>
 
 /*
  * 正如文件名字所说，这是一个 tcp server 的用户程序 demo
  */
 
+void signal_handler(int signum) {
+    printf("Caught signal %d, exiting...\n", signum);
+    exit(0); // 正常退出
+}
+
 
 int main(int argc, char** argv)
 {
     static struct btcp_tcpsrv_handler srv;
-   
+    signal(SIGINT, signal_handler);
     
     if (btcp_tcpsrv_listen("192.168.0.11", 8080, &srv) < 0)
     {

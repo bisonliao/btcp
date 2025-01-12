@@ -7,9 +7,9 @@ FILES	=  btcp_engine.c btcp_timeout.c btcp_send_queue.c  btcp_recv_queue.c   btc
 all: demo_cli demo_srv libbtcp.a
 
 demo_cli:demo_tcpcli.c libbtcp.a
-	gcc -o demo_cli  $^  $(CFLAGS) $(CLIBS)
+	gcc  -o demo_cli  $^  $(CFLAGS) $(CLIBS)
 demo_srv:demo_tcpsrv.c libbtcp.a
-	gcc -o demo_srv $^  $(CFLAGS) $(CLIBS)
+	gcc  -o demo_srv $^  $(CFLAGS) $(CLIBS)
 	scp demo_srv pi@192.168.0.11:~/btcp/
 
 
