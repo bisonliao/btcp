@@ -22,7 +22,7 @@
 
 
 int btcp_set_socket_nonblock(int sockfd);
-int btcp_is_readable(int sockfd, int to, char * bigbuffer, int buflen, struct sockaddr_in *client_addr);
+int btcp_is_readable(int sockfd, int to, char * buffer, int buflen, struct sockaddr_in *client_addr);
 
 /*
  * tcp的sequence是32bit的，很容易就用完并且要回绕

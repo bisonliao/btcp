@@ -330,13 +330,14 @@ int btcp_set_socket_nonblock(int sockfd)
     return 0;
 }
 
-int btcp_is_readable(int sockfd, int to, char * bigbuffer, int buflen, struct sockaddr_in *client_addr)
+int btcp_is_readable(int sockfd, int to, char * buffer, int buflen, struct sockaddr_in *client_addr)
 {
     struct pollfd pfd[1];
     pfd[0].fd = sockfd;
     pfd[0].events = POLLIN;
     
     
+
     socklen_t addr_len = sizeof(struct sockaddr);
 
     int ret = poll(pfd, 1, to);
@@ -344,7 +345,7 @@ int btcp_is_readable(int sockfd, int to, char * bigbuffer, int buflen, struct so
     {
         if (pfd[0].revents & POLLIN)
         {
-            ssize_t received = recvfrom(pfd[0].fd, bigbuffer, buflen, 0,
+            ssize_t received = recvfrom(pfd[0].fd, buffer, buflen, 0,
                                         (struct sockaddr *)client_addr, &addr_len);
             if (received >= 0)
             {

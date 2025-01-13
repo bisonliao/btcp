@@ -1383,6 +1383,9 @@ static int btcp_send_data_in_range(struct btcp_tcpconn_handler *handler,
             iov[0].iov_len = sizeof(struct btcp_tcphdr);
             iov_num++;
 
+            unsigned int r = btcp_get_random() % 10;
+
+            
             int seg_num = btcp_send_queue_fetch_data2(&handler->send_buf,
                                                       b_range.from,
                                                       b_range.from + datalen - 1, &iov[1]);
@@ -1392,8 +1395,14 @@ static int btcp_send_data_in_range(struct btcp_tcpconn_handler *handler,
                 break;
             }
             iov_num += seg_num;
-
-            btcp_sendmsg(handler->udp_socket, server_addr, iov, iov_num);
+            if (r == 0)
+            {
+                g_message("lost package[%llu, %llu]", b_range.from, b_range.from + datalen - 1);
+            }
+            else
+            {
+                btcp_sendmsg(handler->udp_socket, server_addr, iov, iov_num);
+            }
 
             // g_info("sent successfully, len:%d\n", sent_len);
             //  记录超时事件, timer里记录的range的sequence都是32bit范围内的值，方便与ack报文的sequence对应
@@ -1640,7 +1649,7 @@ static void* btcp_tcpcli_loop(void *arg)
                     {
                         // 上层应用主动关闭，有两种情况
                         g_info("detect user closed the conn");
-                        handler->user_socket_pair[1] = -1;
+                        
                         if (handler->status == ESTABLISHED || handler->status == CLOSE_WAIT)
                         {
                             btcp_send_queue_push_fin(&handler->send_buf);
@@ -2019,7 +2028,8 @@ static void* btcp_tcpsrv_loop(void * arg)
                     if (fd_closed)
                     {
                         // 上层应用主动关闭，有两种情况
-                         g_info("server side, user closed the conn");
+                        g_info("server side, user closed the conn");
+                        
                         if (handler->status == ESTABLISHED || handler->status == CLOSE_WAIT)
                         {
                             btcp_send_queue_push_fin(&handler->send_buf);
