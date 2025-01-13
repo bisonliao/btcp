@@ -75,7 +75,7 @@ int btcp_recv_queue_try_move_wnd(struct btcp_recv_queue *queue);
 //收到了对端发来的fin请求，缓存到接收队列，在处理完前面的数据的时候，引擎才处理这个fin请求
 int btcp_recv_queue_save_fin_req(struct btcp_recv_queue *queue, uint32_t seq);
 
-// 把收到的数据抛给应用层。直接实现成recv queue的成员函数，是为了少一次数据拷贝
+// 把从对端收到的数据抛给应用层。直接实现成recv queue的成员函数，是为了少一次数据拷贝
 int btcp_recv_queue_throw_data_to_user(struct btcp_recv_queue *queue, int fd);
 
 #endif // btcp_recv_QUEUE_H

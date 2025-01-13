@@ -58,6 +58,9 @@ void btcp_send_queue_clear(struct btcp_send_queue *queue);
 // 该函数用于发送窗口比较大时候，一次性发送多个mss，那就会逐段的从队列中获取待发送数据
 // 该函数调用，不会移动底层循环队列的 head /tail，仅仅拷贝数据，循环队列对此操作一无所知
 int btcp_send_queue_fetch_data(struct btcp_send_queue *queue, uint64_t from, uint64_t to, unsigned char* data); 
+
+// 根据 [from, to] 设定的数据范围，返回数据段指针存放在vec中，用于sendmsg函数发送数据
+// 避免内存拷贝
 int btcp_send_queue_fetch_data2(struct btcp_send_queue *queue, 
                         uint64_t from, uint64_t to, 
                         struct iovec * vec); 

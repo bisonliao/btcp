@@ -2,6 +2,7 @@
 #include "btcp_engine.h"
 #include <poll.h>
 #include <stdint.h>
+#include <sys/epoll.h>
 /*
  * tcp 引擎的实现， 主要形式是一个死循环的工作线程
  * 它不断的从底层udp套接字和 user_socket_pair 收发包，沟通用户态程序和对端的tcp通信者
@@ -414,7 +415,7 @@ int btcp_handle_ack(union btcp_tcphdr_with_option *tcphdr, struct btcp_tcpconn_h
         handler->local_seq = ack_seq32;
         btcp_send_queue_set_start_seq(&handler->send_buf, handler->local_seq);
 
-        g_info("enter closed status");
+        g_info("enter closed status, (%s,%d)", handler->peer_ip, handler->peer_port);
 
         // 删除可能的定时器
         btcp_timer_remove_range(&handler->timeout, &range);
@@ -589,7 +590,8 @@ int btcp_enter_time_wait(struct btcp_tcpconn_handler *handler,
     int iret;
     if ( (iret = btcp_send_fin_response(handler, tcphdr, bigbuffer)) == 0)
     {
-        handler->status = TIME_WAIT;
+        //handler->status = TIME_WAIT;
+        handler->status = CLOSED; // 取巧实现，直接置为closed，主循环会忽视它
         return 0;
     }
     g_info("enter time_wait status");
@@ -1768,14 +1770,20 @@ int btcp_tcpcli_new_loop_thread(struct btcp_tcpconn_handler *handler)
     return 0;
 }
 
-static int btcp_tcpsrv_orgnize_poll_fds(struct btcp_tcpsrv_handler * srv, struct pollfd *fds,
-                            struct btcp_tcpconn_handler* conns[])
+static int btcp_tcpsrv_orgnize_poll_fds(struct btcp_tcpsrv_handler * srv, int epoll_fd)
 {
-    int i = 0;
-    fds[i].fd = srv->udp_socket;
-    fds[i].events = POLLIN;
-    conns[i] = NULL;
-    i++;
+    struct epoll_event event;
+    event.events = EPOLLIN; 
+    event.data.ptr = NULL;              //特殊值，表示 udp socket
+
+    int count = 0;
+
+     // 将 fd 添加到 epoll 实例
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, srv->udp_socket, &event) == -1) {
+        g_critical("epoll_ctl EPOLL_CTL_ADD failed,%s", strerror(errno));
+        return -1;
+    }
+    count++;
     
 
     //  遍历哈希表
@@ -1788,21 +1796,25 @@ static int btcp_tcpsrv_orgnize_poll_fds(struct btcp_tcpsrv_handler * srv, struct
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         struct btcp_tcpconn_handler *handler = (struct btcp_tcpconn_handler *)value;
-        if (handler->status != CLOSED && i < MAX_CONN_ALLOWED)
+        if (handler->status != CLOSED)
         {
-            fds[i].fd = handler->user_socket_pair[1];
-            fds[i].events = POLLIN;
-
-            conns[i] = handler;
-            i++; 
+            event.events = EPOLLIN;
+            event.data.ptr = handler;
+            // 将 fd 添加到 epoll 实例
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, handler->user_socket_pair[1], &event) == -1)
+            {
+                g_critical("epoll_ctl EPOLL_CTL_ADD failed at %d,%s", __LINE__, strerror(errno));
+                return -1;
+            }
+            count++;
             
         }
     }
  
-    return i;
+    return count;
 }
 // srv需要对所有连接做的keep alive
-static int btcp_tcpsrv_keep_alive(struct btcp_tcpsrv_handler * srv, char *bigbuffer)
+static int btcp_tcpsrv_keep_alive(struct btcp_tcpsrv_handler * srv, char *bigbuffer, int epoll_fd)
 {
     GHashTableIter iter;
     gpointer key, value;
@@ -1833,6 +1845,14 @@ static int btcp_tcpsrv_keep_alive(struct btcp_tcpsrv_handler * srv, char *bigbuf
     for (iter2 = conns_to_close; iter2 != NULL; iter2 = iter2->next)
     {
         struct btcp_tcpconn_handler *handler = (struct btcp_tcpconn_handler *)iter2->data;
+        // 删除文件描述符
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, handler->user_socket_pair[1], NULL) == -1)
+        {
+            if (errno != ENOENT)
+            {
+                g_warning("EPOLL_CTL_DEL failed, %s", strerror(errno));
+            }
+        }
         // btcp_destroy_tcpconn(handler, true); //这个要注释掉，因为hash table在remove的时候会调用释放函数，里面有调用这个函数
         g_info("keepalive close the conn to (%s,%d)", handler->peer_ip, handler->peer_port);
         g_hash_table_remove(srv->all_connections, handler); // close the connn
@@ -1842,17 +1862,21 @@ static int btcp_tcpsrv_keep_alive(struct btcp_tcpsrv_handler * srv, char *bigbuf
     return 0;
 }
 // srv需要对所有连接做的 尝试发包和超时检查
-static int btcp_tcpsrv_circular_task(struct btcp_tcpsrv_handler * srv, char *bigbuffer, int *timeout)
+static int btcp_tcpsrv_circular_task(struct btcp_tcpsrv_handler * srv, 
+                                char *bigbuffer, int *timeout, int epoll_fd)
 {
     GHashTableIter iter;
     gpointer key, value;
     g_hash_table_iter_init(&iter, srv->all_connections);
    
     bool has_data_to_send = false;
-    
+    GList * to_remove = NULL;
+    g_info("scan hash table...");
     while (g_hash_table_iter_next(&iter, &key, &value))
     {
         struct btcp_tcpconn_handler *handler = (struct btcp_tcpconn_handler *)value;
+        g_info("a handler, status=%d, fd=%d,%d", handler->status, handler->user_socket_pair[0],
+                        handler->user_socket_pair[1]);
         if (handler->status != CLOSED)
         {
             if (btcp_check_send_timeout(handler)) // 检查可能的发包超时未ack
@@ -1866,16 +1890,39 @@ static int btcp_tcpsrv_circular_task(struct btcp_tcpsrv_handler * srv, char *big
                 // 只要还有tcp报文未发送，那么超时时间就极短
                 has_data_to_send = true;
             }
-        
+        }
+        else // CLOSED 状态的 handler应该从hash table中清理
+        {
+            to_remove = g_list_insert(to_remove, handler, 0);
         }
     }
+    GList * list_iter;
+    for (list_iter = to_remove; list_iter != NULL; list_iter = list_iter->next)
+    {
+        struct btcp_tcpconn_handler *handler = (struct btcp_tcpconn_handler *)list_iter->data;
+        g_message("clear a conn to %s %d", handler->peer_ip, handler->peer_port);
+        // 删除文件描述符
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, handler->user_socket_pair[1], NULL) == -1)
+        {
+            if (errno != ENOENT)
+            {
+                g_warning("EPOLL_CTL_DEL failed, %s", strerror(errno));
+            }
+        }
+
+        g_hash_table_remove(srv->all_connections, handler);
+        
+    }
+    g_list_free(to_remove);
     
     if (has_data_to_send)
     {
+        g_info("timeout value set to 0");
         *timeout = 0;
     }
     else
     {
+        g_info("timeout value set to 10");
         *timeout = 10;
     }
     return 0;
@@ -1886,21 +1933,40 @@ static void* btcp_tcpsrv_loop(void * arg)
     struct btcp_tcpsrv_handler * srv = (struct btcp_tcpsrv_handler*)arg;
     static char bigbuffer[DEF_RECV_BUFSZ]  __attribute__((aligned(8)));//用于收发包临时数据存储，不会跨线程、不会跨连接
     int timeout = 100;
-    
+
+    int epoll_fd = epoll_create(MAX_CONN_ALLOWED + 1);
+    if (epoll_fd < 0)
+    {
+        g_critical("epoll_create() failed, %s", strerror(errno));
+        return NULL;
+    }
+
+    int fd_num = btcp_tcpsrv_orgnize_poll_fds(srv, epoll_fd);
+    if (fd_num < 0)
+    {
+        return NULL;
+    }
+
     while (1)
     {
-        struct pollfd fds[MAX_CONN_ALLOWED+1]; // 0号fd是底层udp，其他都是socketpair与用户层通信
-        struct btcp_tcpconn_handler* conns[MAX_CONN_ALLOWED+1]; // 与上面按下标一一对应
-        int fd_num = btcp_tcpsrv_orgnize_poll_fds(srv, fds, conns);
-        int ret = poll(fds, fd_num, timeout); 
+
         
-        if (ret > 0)
+        // 等待事件
+        static struct epoll_event events[MAX_CONN_ALLOWED + 1];
+        int nfds = epoll_wait(epoll_fd, events, MAX_CONN_ALLOWED + 1, timeout);
+        if (nfds == -1)
         {
-            if (fds[0].revents & POLLIN) //底层udp可读，收包并处理
+            g_critical("epoll_wait failed,%s", strerror(errno));
+            break;
+        }
+
+        for (int i = 0; i < nfds; i++)
+        {
+            if (events[i].data.ptr == NULL) //底层udp可读，收包并处理
             {
                 struct sockaddr_in client_addr;
                 socklen_t addr_len = sizeof(struct sockaddr);
-                int pkg_len = recvfrom(fds[0].fd, bigbuffer, sizeof(bigbuffer), 0,
+                int pkg_len = recvfrom(srv->udp_socket, bigbuffer, sizeof(bigbuffer), 0,
                                         (struct sockaddr *)&client_addr, &addr_len);
                 if (pkg_len > 0)
                 {
@@ -1930,7 +1996,7 @@ static void* btcp_tcpsrv_loop(void * arg)
                         conn = btcp_handle_sync_rcvd1(bigbuffer, srv, &client_addr);
                         if (conn == NULL)
                         {
-                            fprintf(stderr, "btcp_handle_sync_rcvd1() failed! %d\n", btcp_errno);
+                            g_critical( "btcp_handle_sync_rcvd1() failed! errno: %d", btcp_errno);
                             continue;
                         }
                         pthread_mutex_lock(&srv->all_connections_mutex);
@@ -1941,15 +2007,43 @@ static void* btcp_tcpsrv_loop(void * arg)
                             continue;
                         }
                         pthread_mutex_unlock(&srv->all_connections_mutex);
+                        
+                        
+                        
                     }
                     else if (conn->status == SYNC_RCVD)
                     {
                         if (btcp_handle_sync_rcvd2(bigbuffer, conn, &client_addr))
                         {
-                            fprintf(stderr, "btcp_handle_sync_rcvd2() failed! %d\n", btcp_errno);
+                            g_critical( "btcp_handle_sync_rcvd2() failed! errno=%d", btcp_errno);
+                            // 删除文件描述符
+                            if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->user_socket_pair[1], NULL) == -1)
+                            {
+                                if (errno != ENOENT)
+                                {
+                                    g_warning("EPOLL_CTL_DEL failed, %s", strerror(errno));
+                                    break;
+                                }
+                                
+                            }
+                            g_info("EPOLL_CTL_DEL fd=%d", conn->user_socket_pair[1]);
+                            
                             pthread_mutex_lock(&srv->all_connections_mutex);
                             g_hash_table_remove(srv->all_connections, &key); // close the connn
                             pthread_mutex_unlock(&srv->all_connections_mutex);
+                        }
+                        else
+                        {
+                            // 将 fd 添加到 epoll 实例
+                            struct epoll_event event;
+                            event.events = EPOLLIN;
+                            event.data.ptr = conn;
+                            if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn->user_socket_pair[1], &event) == -1)
+                            {
+                                g_critical("epoll_ctl EPOLL_CTL_ADD failed at %d,%s", __LINE__, strerror(errno));
+                                break;
+                            }
+                            g_info("EPOLL_CTL_ADD fd=%d", conn->user_socket_pair[1]);
                         }
                     }
                     else if (conn->status != CLOSED && conn->status != SYNC_RCVD)
@@ -1961,45 +2055,25 @@ static void* btcp_tcpsrv_loop(void * arg)
                             // struct btcp_tcpconn_handler * removed =  (struct btcp_tcpconn_handler *)g_hash_table_remove(srv->all_connections, &key); // close the connn // close the connn
                         }
                     }
+                    
                 }
                 
             }
-            for (int i = 1; i < fd_num; ++i) //循环监视所有的用户层fd，fd很大时要改为epoll性能才好些
+            else //循环监视所有的用户层fd，fd很大时要改为epoll性能才好些
             {
                 
-                if (fds[i].revents & POLLIN)
+                if (events[i].events & POLLIN)
                 {
                     
-                    struct btcp_tcpconn_handler * handler = conns[i];
+                    struct btcp_tcpconn_handler * handler = (struct btcp_tcpconn_handler *)events[i].data.ptr;
                     if (handler->status == CLOSED)
                     {
                         continue;
                     }
-                    #if 0
-                    int space = btcp_send_queue_get_available_space(&handler->send_buf); // 获得发送缓冲区的空闲空间大小
-                    if (space > 0)
-                    {
-                        
-                        ssize_t received = read(fds[i].fd, bigbuffer, space);
-                        if (received > 0)
-                        {
-                            int written = btcp_send_queue_enqueue(&handler->send_buf, bigbuffer, received);
-                            g_info("get %d bytes from user, write %d bytes into queue\n", received, written);
-                            btcp_try_send(handler);
-                        }
-                        else if (received == 0) //用户层关闭了socketpair，需要对tcpconn做FIN
-                        {
-                            //上层应用主动关闭，有两种情况
-                            //g_info("server side, user closed the conn");
-                            if (handler->status == ESTABLISHED || handler->status == CLOSE_WAIT)
-                            {
-                               btcp_send_queue_push_fin(&handler->send_buf);
-                            }
-                        }
-                    }
-                    #else
+                    
                     bool fd_closed = false;
-                    int iret = btcp_send_queue_enqueue_zero_copy(&handler->send_buf, fds[i].fd, &fd_closed);
+                    int iret = btcp_send_queue_enqueue_zero_copy(&handler->send_buf, 
+                                            handler->user_socket_pair[1], &fd_closed);
                     if (fd_closed)
                     {
                         // 上层应用主动关闭，有两种情况
@@ -2012,17 +2086,18 @@ static void* btcp_tcpsrv_loop(void * arg)
                     
                     btcp_try_send(handler);
                     
-#endif
+
                 }
             }
         }
+       
         //到这里，poll就处理完了
         
         //  遍历哈希表, 做一些定时要做的事情
         // 1) keep alive
-        btcp_tcpsrv_keep_alive(srv, bigbuffer);
+        btcp_tcpsrv_keep_alive(srv, bigbuffer, epoll_fd);
         // 2) 尝试发数据，检查发包超时没有
-        btcp_tcpsrv_circular_task(srv, bigbuffer, &timeout);
+        btcp_tcpsrv_circular_task(srv, bigbuffer, &timeout, epoll_fd);
     }
 }
 
