@@ -1667,8 +1667,11 @@ static void* btcp_tcpcli_loop(void *arg)
         }
         else
         {
-            g_critical("poll(),%s", strerror(errno));
-            break;
+            if (errno != EINTR)
+            {
+                g_critical("poll failed,%s", strerror(errno));
+                break;
+            }
         }
         
         if (btcp_check_send_timeout(handler))//检查可能的发包超时未ack
@@ -1900,15 +1903,25 @@ static void* btcp_tcpsrv_loop(void * arg)
 
     while (1)
     {
-
-        
         // 等待事件
         static struct epoll_event events[MAX_CONN_ALLOWED + 1];
         int nfds = epoll_wait(epoll_fd, events, MAX_CONN_ALLOWED + 1, timeout);
         if (nfds == -1)
         {
-            g_critical("epoll_wait failed,%s", strerror(errno));
-            break;
+            if (errno != EINTR)
+            {
+                g_critical("epoll_wait failed,%s", strerror(errno));
+                break;
+            }
+            
+        }
+        if (nfds > 0) // 说明系统比较忙，所以超时设置短一点
+        {
+            timeout = 0;
+        }
+        else // 系统不忙，
+        {
+            timeout = 100;
         }
 
         for (int i = 0; i < nfds; i++)
