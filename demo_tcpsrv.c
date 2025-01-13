@@ -5,32 +5,32 @@
 #include <err.h>
 #include <errno.h>
 #include  <glib.h>
-#include <signal.h>
+#include <ctype.h>
 
 /*
  * 正如文件名字所说，这是一个 tcp server 的用户程序 demo
  */
-
-void signal_handler(int signum) {
-    printf("Caught signal %d, exiting...\n", signum);
-    exit(0); // 正常退出
+void handle_sigint(int signum) {
+    printf("Caught SIGINT (Ctrl+C), signum = %d\n", signum);
+    
+    exit(0);
 }
-
 
 int main(int argc, char** argv)
 {
     static struct btcp_tcpsrv_handler srv;
-    signal(SIGINT, signal_handler);
-    
+   
+    signal(SIGINT, handle_sigint);
+
     if (btcp_tcpsrv_listen("192.168.0.11", 8080, &srv) < 0)
     {
         printf("btcp_tcpsrv_listen failed, errno=%d\n", btcp_errno);
         return -1;
     }
     btcp_tcpsrv_new_loop_thread(&srv);
-    static char bigbuffer[DEF_RECV_BUFSZ] __attribute__((aligned(8))); // 用于临时收发包，不会跨线程也不会跨连接使用
-    uint64_t total_read = 0;
-    uint64_t total_write = 0;
+    static char bigbuffer[100*1024] __attribute__((aligned(8))); // 用于临时收发包，不会跨线程也不会跨连接使用
+    uint64_t total = 0;
+    char last_char = 0;
     
     while (1)
     {
@@ -51,10 +51,11 @@ int main(int argc, char** argv)
             int fd_num = i;
             
             
-            int ret = poll(pfd, fd_num, 100); 
+            int ret = poll(pfd, fd_num, 10); 
             
             if (ret > 0)
             {
+                
                 for (i = 0; i < fd_num; ++i)
                 {
                     if (pfd[i].revents & POLLIN) 
@@ -65,42 +66,21 @@ int main(int argc, char** argv)
                         if (received > 0)
                         {
                             bigbuffer[received] = 0;
-                            //printf("[%s]\n", bigbuffer);
-                            total_read += received;
-                            g_warning("total read=%llu\n", total_read);
-                            
-                            int offset = 0;
-                            //echo 回去
-                            // 因为 fd都是非阻塞的，可能需要多次发送。
-                            #if 0
-                            while (1)
+                            printf("[%s]\n", bigbuffer);
+                            total += received;
+                            printf(">>>>>>>>>total=%llu\n", total);
+
+                            //转成大写字母后回应客户端
+                            if (last_char != 0 && last_char != 'z')
                             {
-                                int written = write(pfd[i].fd, bigbuffer+offset, received - offset);
-                                if (written < 0)
-                                {
-                                    if (errno == EAGAIN || errno == EWOULDBLOCK)
-                                    {
-                                        usleep(100);
-                                        continue;
-                                    }
-                                    else
-                                    {
-                                        perror("write");
-                                        return -1;
-                                    }
-                                }
-                                else
-                                {
-                                    total_write += written;
-                                    offset += written;
-                                    printf(">>>>>>>>>total write=%llu\n", total_write);
-                                    if (offset == received)
-                                    {
-                                        break;
-                                    }
-                                }
+                                g_assert (last_char+1 == bigbuffer[0]);
+                                last_char = bigbuffer[received-1];
                             }
-                            #endif
+                            for (int i = 0; bigbuffer[i] != '\0'; i++)
+                            {
+                                bigbuffer[i] = toupper((unsigned char)bigbuffer[i]);
+                            }
+                            write(pfd[i].fd, bigbuffer, received);
                         }
                         else if (received == 0)
                         {
@@ -116,13 +96,14 @@ int main(int argc, char** argv)
                     }
                 }
             }
+            
 
             btcp_free_conns_in_glist(conns);
             conns = NULL;
         }
         else
         {
-            //printf("no established conns\n");
+            usleep(1000);
         }
         
     }

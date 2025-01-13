@@ -5,21 +5,21 @@
 #include <pthread.h>
 #include <glib.h>
 #include <unistd.h>
-#include <signal.h>
 /*
  * 正如文件名字所说，这是一个 tcp client的用户程序 demo
  */
 
-void signal_handler(int signum) {
-    printf("Caught signal %d, exiting...\n", signum);
-    exit(0); // 正常退出
+static struct btcp_tcpconn_handler handler;
+void handle_sigint(int signum) {
+    printf("Caught SIGINT (Ctrl+C), signum = %d\n", signum);
+    btcp_destroy_tcpconn(&handler, false);
+    exit(0);
 }
-
 int main(int argc, char** argv)
 {
-    static struct btcp_tcpconn_handler handler;
+    
 
-    signal(SIGINT, signal_handler);
+    signal(SIGINT, handle_sigint);
     
     if (btcp_tcpcli_connect("192.168.0.11", 8080, &handler))
     {
@@ -32,8 +32,6 @@ int main(int argc, char** argv)
     
     uint64_t total_write = 0; // 统计用户层发送了多少字节
     uint64_t total_read = 0;
-    char buf[102400] = {0};
-    ssize_t sz = 102400;
     while (1)
     {
         if (handler.status != ESTABLISHED)
@@ -42,19 +40,20 @@ int main(int argc, char** argv)
             continue;
         }
 
-        if (total_write < (1000000 * 100))
-        {
-            // 准备 26个英文小写字母
-            
-            
-            #if 0
-            for (int i = 0; i < sz; ++i)
-            {
-                buf[i] = 'a' + i;
-            }
-            #endif
-            int offset = 0;
+        
 
+        // 准备 26个英文小写字母
+        char buf[1024];
+        ssize_t sz = 26;
+        
+        for (int i = 0; i < sz; ++i)
+        {
+            buf[i] = 'a'+i;
+        }
+        int offset = 0;
+       
+        if (total_write < 1000)
+        {
             // 不断的通过tcp连接发送给服务器
             while (1)
             {
@@ -63,6 +62,7 @@ int main(int argc, char** argv)
                 {
                     if (errno == EAGAIN || errno == EWOULDBLOCK)
                     {
+                        usleep(100);
                         continue;
                     }
                     else
@@ -75,7 +75,7 @@ int main(int argc, char** argv)
                 {
                     total_write += iret;
                     offset += iret;
-                    printf(">>>>>>>>>total write=%llu\n", total_write);
+                    g_message(">>>>>>>>>total write=%llu", total_write);
                     if (offset == sz)
                     {
                         break;
@@ -83,51 +83,34 @@ int main(int argc, char** argv)
                 }
             }
         }
-        else
+        struct sockaddr_in client_addr;
+        int received = btcp_is_readable(handler.user_socket_pair[0], 100, buf, sizeof(buf), &client_addr);
+        if (received > 0)
+        {
+            buf[received] = 0;
+            printf("received:%s\n", buf);
+            total_read += received;
+            g_message(">>>>>>>>>total read=%llu", total_read);
+        }
+
+        if (total_write > 1000 && total_write == total_read)
         {
             break;
         }
-        #if 0
-        while (1) // 不断的收数据
-        {
-            char buf[1024];
-            int iret = read(handler.user_socket_pair[0], buf, sizeof(buf));
-            if (iret <0 )
-            {
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
-                {
-                    break;
-                }
-                else
-                {
-                    perror("write");
-                    return -1;
-                }
-            }
-            if (iret == 0)
-            {
-                break;
-            }
-            else  // iret > 0
-            {
-                total_read += iret;
-                
-                printf(">>>>>>>>>total read=%llu\n", total_read);
-                
-            }
-        }
-        #endif
-       
-        //usleep(1000000*1);
+        
+        usleep(100000);
+
         
     }
-    g_info("client close the conn");
+    g_message("client close the conn");
     close(handler.user_socket_pair[0]);
-    while (1)
+    int secs;
+    for (secs = 0; secs < 3; ++secs)
     {
-        usleep(1000);
-        g_warning("status=%d", handler.status);
+        usleep(1000000);
+        g_message("status=%d", handler.status);
     }
+    btcp_destroy_tcpconn(&handler, false);
    
     return 0;
 }
