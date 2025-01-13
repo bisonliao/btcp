@@ -33,4 +33,6 @@ GList *  btcp_tcpsrv_get_all_conn_fds(struct btcp_tcpsrv_handler * srv, int * st
 //释放保存了的 int fd 的GList，也会释放每个元素
 void btcp_free_conns_in_glist(GList * conns); 
 
+int btcp_destroy_tcpconn(struct btcp_tcpconn_handler *handler, bool is_server);
+
 #endif
