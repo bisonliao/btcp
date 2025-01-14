@@ -10,3 +10,24 @@ btcp会在用户进程中创建引擎工作线程，它不断的从底层udp套�
 
 bison 2025年一月份于广州南沙。
 
+```mermaid
+graph TD;
+subgraph  client
+    A[application thread]
+    B[tcp client engine thread]
+end
+subgraph  server
+    C[tcp server engine thread]
+    D[application thread]
+end
+
+A ---|socketpair|B ;
+B ---|udp socket|C;
+C ---|socketpair|D ;
+
+style A fill:#FFFFFF,stroke:#333333,stroke-width:1px 
+style B fill:#FFFFFF,stroke:#333333,stroke-width:1px  
+style C fill:#FFFF00,stroke:#333333,stroke-width:1px  
+style D fill:#FFFF00,stroke:#333333,stroke-width:1px  
+```
+
